@@ -10,7 +10,7 @@ __global__ void multGPU(float* A, float* B, float* res, int n) {
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (row < n && col < n) { /////////////////////
+    if (row < n && col < n) {
         float sum = 0;
         for (int i = 0; i < n; i++) {
             sum += A[row * n + i] * B[i * n + col];
@@ -25,16 +25,16 @@ __global__ void multOptimized(float* A, float* B, float* res, int n) {
     int aStep = blockDim.x;
     int bBegin = blockDim.x * blockIdx.x;
     int bStep = blockDim.y * n;
-    __shared__ float as[BLOCK_SIZE][BLOCK_SIZE];
-    __shared__ float bs[BLOCK_SIZE][BLOCK_SIZE];
+    __shared__ float as[BLOCK_SIZE * BLOCK_SIZE];
+    __shared__ float bs[BLOCK_SIZE * BLOCK_SIZE];
     float sum = 0;
 
     for (int ia = aBegin, ib = bBegin; ia < aEnd; ia += aStep, ib += bStep) {
-        as[threadIdx.y][threadIdx.x] = A[ia + n * threadIdx.y + threadIdx.x];
-        bs[threadIdx.y][threadIdx.x] = B[ib + n * threadIdx.y + threadIdx.x];
+        as[threadIdx.y * BLOCK_SIZE + threadIdx.x] = A[ia + n * threadIdx.y + threadIdx.x];
+        bs[threadIdx.y * BLOCK_SIZE + threadIdx.x] = B[ib + n * threadIdx.y + threadIdx.x];
         __syncthreads();
-        for (int k = 0; k < blockDim.x; k++) {
-            sum += as[threadIdx.y][k] * bs[k][threadIdx.x];
+        for (int k = 0; k < BLOCK_SIZE; k++) {
+            sum += as[threadIdx.y * BLOCK_SIZE + k] * bs[k * BLOCK_SIZE + threadIdx.x];
         }
         __syncthreads();
     }
@@ -60,6 +60,8 @@ void fill(float* A, float* B, int n) {
         for (int j = 0; j < n; j++) {
             A[i * n + j] = 2.0f;
             B[i * n + j] = 1.0f;
+            /*A[i * n + j] = i * n + j + 1;
+            B[j * n + i] = i * n + j + 1;*/
         }
     }
 }
@@ -82,7 +84,7 @@ int main() {
     clear(res, n);
 
     float max_error = 0.0f;
-
+    //OMP-----------------------------------------------------------
     omp_set_num_threads(4);
     double start = omp_get_wtime();
     multOMP(A, B, res, n);
@@ -94,6 +96,7 @@ int main() {
     std::cout << "Error: " << max_error << std::endl;
     clear(res, n);
 
+    //GPU-----------------------------------------------------------
     cudaMemcpy(AGPU, A, n * n * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(BGPU, B, n * n * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(resGPU, res, n * n * sizeof(float), cudaMemcpyHostToDevice);
@@ -103,18 +106,20 @@ int main() {
     finish = omp_get_wtime();
     std::cout << "GPU: " << finish - start << std::endl;
     cudaMemcpy(res, resGPU, n * n * sizeof(float), cudaMemcpyDeviceToHost);
+    std::cout << "Error: " << max_error << std::endl;
     for (int i = 0; i < n * n; ++i) {
         max_error = std::max(max_error, std::abs(res[i] - 2048.0f));
     }
-    std::cout << "Error: " << max_error << std::endl;
     clear(res, n);
 
+    //Optimized------------------------------------------------------
     start = omp_get_wtime();
     multOptimized << <num_block, block_size >> > (AGPU, BGPU, resGPU, n);
     cudaDeviceSynchronize();
     finish = omp_get_wtime();
     std::cout << "Optimized: " << finish - start << std::endl;
     cudaMemcpy(res, resGPU, n * n * sizeof(float), cudaMemcpyDeviceToHost);
+
     for (int i = 0; i < n * n; ++i) {
         max_error = std::max(max_error, std::abs(res[i] - 2048.0f));
     }
